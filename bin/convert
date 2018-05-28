@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+
+import argparse
+import pickle
+import getpass
+import logging
+import os
+from urllib.parse import quote_plus
+
+import pymongo
+
+from tqdm import tqdm
+
+from orion.core.io.space_builder import DimensionBuilder
+from orion.core.worker.trial import Trial
+
+
+logger = logging.getLogger()
+
+dimension_builder = DimensionBuilder()
+
+real_infinit_dimension = dimension_builder.build(
+    'real', 'uniform(-100000000, 100000000)')
+integer_infinit_dimension = dimension_builder.build(
+    'integer', 'uniform(-100000000, 100000000, discrete=True)')
+
+
+class InvalidTrial(BaseException):
+    pass
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Build pickled logs for orion-viz")
+
+    parser.add_argument("--output-dir",  default="data", help="folder where to save trials")
+
+    parser.add_argument("--database-name", metavar="db-name",
+                        help=("database name"))
+
+    parser.add_argument(
+        "--host-names", default=["localhost"], nargs="*",
+        help="Host where the mongoDB database is to store configurations and "
+             "results")
+
+    parser.add_argument(
+        "--ports", default=[27017], nargs="*", type=int,
+        help="Host for the mongodb database")
+
+    parser.add_argument(
+        "--ssl", action="store_true",
+        help="")
+
+    parser.add_argument(
+        "--ssl-ca-file",
+        help="")
+
+    parser.add_argument(
+        "--replica-set",
+        help="")
+
+    parser.add_argument(
+        "--auth-source", default=getpass.getuser(),
+        help="")
+
+    parser.add_argument(
+        "--user-name", default=getpass.getuser(),
+        help="User name for the mongoDB database.")
+
+    parser.add_argument(
+        "--password", default="",
+        help="Password for the mongoDB database.")
+
+    parser.add_argument(
+        '-v', '--verbose', action='count', default=0,
+        help="Print informations about the process.\n"
+             "     -v: INFO\n"
+             "     -vv: DEBUG")
+
+    return parser
+
+
+def parse_args(argv):
+    opt = build_parser().parse_args(argv)
+
+    if opt.verbose == 0:
+        logging.basicConfig(level=logging.WARNING)
+        logger.setLevel(level=logging.WARNING)
+    elif opt.verbose == 1:
+        logging.basicConfig(level=logging.INFO)
+        logger.setLevel(level=logging.INFO)
+    elif opt.verbose == 2:
+        logging.basicConfig(level=logging.DEBUG)
+        logger.setLevel(level=logging.DEBUG)
+
+    return opt
+
+
+def infer_type(value):
+    if value in real_infinit_dimension:
+        return real_infinit_dimension.type
+    elif value in integer_infinit_dimension:
+        return integer_infinit_dimension.type
+    else:
+        return 'categorical'
+
+
+objective_names = ['valid_m', 'validation_error_rate', 'validation_accuracy']
+
+to_keep = {'name': 'experiment',
+           'heartbeat': 'heartbeat',
+           'config': 'params',
+           '_id': '_id',
+           'metrics': 'metrics',
+           'status': 'status',
+           'start_time': 'start_time',
+           'stop_time': 'stop_time'}
+
+status_convert = {
+    'COMPLETED': 'completed',
+    'CLUSTER_PROBLEM': 'broken',
+    'FAILED': 'broken',
+    'QUEUED': 'new',
+    'INTERRUPTED': 'interrupted'}
+
+valid_stats = (
+    ['train_l', 'train_m', 'valid_l', 'valid_m'] +
+    ['validation_error_rate', 'train_cross_entropy_loss', 'validation_cross_entropy_loss',
+     'train_error_rate', 'train_total_loss', 'validation_total_loss',
+     'train_accuracy',
+     'validation_accuracy'])
+
+valid_param = ['arch', 'bs', 'center_cov', 'compute_pi', 'correct_step',
+               'decay', 'eps', 'estimate_using_n', 'every_n', 'ggt', 'gs',
+               'l2', 'lr', 'mean', 'nbu', 'nepochs', 'scale', 'xxt']
+
+valid_param += """
+activation_functions
+activations_correlation_penalty
+activations_covariance_penalty
+add_pre_projection
+batch_size
+centered_activations
+centered_projections
+decov_penalty
+dropout
+epochs
+force_library_batch_norm
+input_dropout
+local_regularizations
+lr
+maximum_variance
+momentum
+normalized_activations
+normalized_epsilon_activations
+normalized_epsilon_projections
+normalized_projections
+pca
+pre_projection_correlation_penalty
+pre_projection_covariance_penalty
+pre_projection_lr
+pre_projection_momentum
+pre_projection_solve_analytically
+pre_projection_train_alternatively
+pre_projection_train_simultaneously
+pre_projection_training_penalty
+pre_projection_zca_epsilon
+pre_projection_zca_sample_size
+pre_projection_zca_update_interval
+pre_projection_zca_use_svd
+reconstruction_error
+rescaled_activations
+rescaled_projections
+true_decov_penalty
+use_bias
+weight_decay
+whiten
+whiten_epsilon
+zca
+""".split("\n")
+
+
+def is_objective(result_name):
+    return result_name in objective_names
+
+
+def create_params(row):
+    params = []
+    for name, value in row['params'].items():
+        param_type = infer_type(value)
+        params.append(Trial.Param(name=name, type=param_type, value=value).to_dict())
+
+    return params
+
+
+BAD_RESULT = Trial.Result(name="validation_error_rate", type="objective", value=None).to_dict()
+
+
+def create_results(row):
+    if not row['metrics'] or "steps" not in next(iter(row['metrics'].values())):
+        return [BAD_RESULT]
+
+    results = []
+
+    for name, value in row['metrics'].items():
+        if name not in valid_stats:
+            continue
+
+        if is_objective(name):
+            result_type = "objective"
+        else:
+            result_type = "constraint"
+
+        value = value['values'][-1]
+
+        results.append(Trial.Result(name=name, type=result_type, value=value).to_dict())
+
+    if not any(result['type'] == "objective" for result in results):
+        results.append(BAD_RESULT)
+
+    return results
+
+
+def create_dynamic(trial):
+    if not trial['metrics'] or "steps" not in next(iter(trial['metrics'].values())):
+        return
+
+    # stats = [{} for _ in range()]
+    n_steps = max(len(v['steps']) for v in trial['metrics'].values())
+    trials = []
+
+    for i in range(n_steps):
+
+        values_iterator = iter(trial['metrics'].values())
+        any_metric = next(values_iterator)
+        while len(any_metric['steps']) <= i:
+            # Will raise StopIteration if none `any_metric` is valid
+            any_metric = next(values_iterator)
+
+        # Trial params are steps and timestamps
+        try:
+            # import pdb
+            # pdb.set_trace()
+
+            params = [
+                Trial.Param(name='steps', type='integer',
+                            value=any_metric['steps'][i]).to_dict(),
+                Trial.Param(name='timestamps', type='real',
+                            value=any_metric['timestamps'][i]).to_dict()]
+
+            if any_metric['steps'][i] not in integer_infinit_dimension:
+                raise InvalidTrial
+        except InvalidTrial:
+            raise
+        except BaseException as e:
+            print(e)
+            import pdb
+            pdb.set_trace()
+
+        # Trial results are values
+        results = []
+        for name, metrics in trial['metrics'].items():
+            if name not in valid_stats:
+                continue
+
+            if len(metrics['values']) <= i:
+                continue
+
+            # for i, value in enumerate(metrics['values']):
+            # metrics['values'][i]
+            # stats[i][key] = value
+            if is_objective(name):
+                result_type = "objective"
+            else:
+                result_type = "constraint"
+
+            result = Trial.Result(name=name, type=result_type, value=metrics['values'][i])
+            results.append(result.to_dict())
+
+        trials.append({'params': params, 'results': results})
+
+    return trials
+
+
+def filter_params(trial):
+    params = {}
+    for name, value in trial['params'].items():
+        if name in valid_param:
+            params[name] = value
+
+    if len(params) < 5:
+        print("\n".join(sorted(trial['params'].keys())))
+        import pdb
+        pdb.set_trace()
+
+    trial['params'] = params
+
+
+def create_trial(row):
+
+    if "config" not in row:
+        return row
+
+    tmp_row = dict(experiment=row['experiment']['name'])
+    for key, new_key in to_keep.items():
+        if key in row:
+            tmp_row[new_key] = row[key]
+
+    row = tmp_row
+
+    if 'metrics' not in row:
+        row['metrics'] = {}
+
+    filter_params(row)
+    dynamic = create_dynamic(row)
+    params = create_params(row)
+    results = create_results(row)
+
+    trial = Trial(
+        experiment=row['experiment'],
+        status=status_convert.get(row['status'], row['status']),
+        worker=None,
+        submit_time=None,
+        start_time=row.get('start_time', None),
+        end_time=row.get('stop_time', None),
+        results=results,
+        params=params)
+
+    trial_dict = trial.to_dict()
+    del trial_dict['worker']
+    del trial_dict['submit_time']
+    del trial_dict['status']
+    trial_dict['dynamic'] = dynamic
+
+    return trial_dict
+
+
+def main(argv=None):
+    opt = parse_args(argv)
+
+    if not os.path.isdir(opt.output_dir):
+        os.mkdir(opt.output_dir)
+
+    uri = "mongodb://%s:%s@%s" % (
+        quote_plus(opt.user_name), quote_plus(opt.password), opt.host_names[0])
+    client = pymongo.MongoClient(
+        uri, authSource=opt.auth_source, ssl=opt.ssl, ssl_ca_certs=opt.ssl_ca_file,
+        replicaSet=opt.replica_set)
+
+    database = client[opt.database_name]
+
+    file_path_template = os.path.join(opt.output_dir, "%s.pkl")
+
+    for collection_name in database.list_collection_names():
+        file_path = file_path_template % collection_name
+        if os.path.exists(file_path):
+            logger.info("Skipping file %s as it already exists" % file_path)
+            continue
+
+        logger.info("Converting file %s" % file_path)
+
+        trials = []
+        query = {"status": {"$in": ["completed", "COMPLETED"]}}
+        projection = (list(to_keep.keys()) + ["experiment.name"])
+        count = database[collection_name].count(query)
+
+        def iterator(cursor, total):
+            if opt.verbose > 0:
+                return tqdm(cursor, total=total)
+
+            return cursor
+
+        cursor = database[collection_name].find(query, projection)
+        for row in iterator(cursor, total=count):
+
+            try:
+                trial = create_trial(row)
+            except InvalidTrial:
+                break
+            except BaseException as e:
+                print(e)
+                import pdb
+                pdb.set_trace()
+                raise
+
+            # import pprint
+            # pprint.pprint(trial['dynamic'])
+            # import pdb
+            # pdb.set_trace()
+
+            trials.append(trial)
+
+        with open(file_path, 'wb') as f:
+            pickle.dump(trials, f, protocol=2)
+
+
+# database = Database(database_name, collection, host_names, ports, user_name,
+#                     password, ssl=ssl, ssl_ca_file=ssl_ca_file,
+#                     auth_source=auth_source)
+# collection = database.runs
+#
+# for experiment_name in experiment_names:
+#     cursor = collection.find({"experiment.name": experiment_name})
+#
+#     print experiment_name
+#     print "Before"
+#     print "runs", cursor.count()
+#
+#     modified = 0
+#     failed = 0
+#
+#     for row in tqdm(cursor, total=cursor.count()):
+#         row_id = row.pop("_id")
+#         if row.get("metrics"):
+#             metrics = row["metrics"]
+#             for key, stats in list(metrics.iteritems()):
+#                 if not key.endswith("_m"):
+#                     continue
+#
+#                 del metrics[key]
+#
+#                 key = key[:-2] + "_a"
+#                 values = [1. - v for v in stats["values"]]
+#                 stats["values"] = values
+#                 metrics[key] = stats
+#
+#             result = collection.update_one(
+#                 {
+#                     "_id": row_id
+#                 },
+#                 {
+#                     "$set": {
+#                         "metrics": metrics
+#                     }
+#                 })
+#
+#             if result.modified_count == 1:
+#                 modified += 1
+#             else:
+#                 failed += 1
+#
+#     print modified, "updates"
+#     print failed, "failed"
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,3 @@
+pymongo
+tqdm
+git+git://github.com/mila-udem/orion
