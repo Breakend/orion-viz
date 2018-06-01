@@ -42,9 +42,30 @@ def _get_matrix_from_features(data, features, n_target_components):
     return X, projected
 
 
+from mpl_toolkits.mplot3d.proj3d import proj_transform
+from matplotlib.text import Annotation
 
+class Annotation3D(Annotation):
+    '''Annotate the point xyz with text s
 
+    From: https://stackoverflow.com/questions/10374930/matplotlib-annotating-a-3d-scatter-plot
+    '''
 
+    def __init__(self, s, xyz, *args, **kwargs):
+        Annotation.__init__(self,s, xy=(0,0), *args, **kwargs)
+        self._verts3d = xyz
+
+    def draw(self, renderer):
+        xs3d, ys3d, zs3d = self._verts3d
+        xs, ys, zs = proj_transform(xs3d, ys3d, zs3d, renderer.M)
+        self.xy=(xs,ys)
+        Annotation.draw(self, renderer)
+
+def annotate3D(ax, s, *args, **kwargs):
+    '''add anotation text s to to Axes3d ax'''
+
+    tag = Annotation3D(s, *args, **kwargs)
+    ax.add_artist(tag)
 
 def _get_results_with_name(data, name):
     # TODO:
@@ -74,17 +95,18 @@ def main(arguments):
     parser.add_argument('--features', nargs="+", type=str, default=None, help="An optional list of features to use rather than the entire list.")
     parser.add_argument('--projection_type', choices=['2d', '3d'], default='2d', help="The type of projection, a 2D plane, a 3D plane, or a heatmap.")
     parser.add_argument('--loss_interpolation_type', choices=["colour", "heatmap", "none"], help="How to show the validation loss value if at all.", default="colour")
-    parser.add_argument("--phylo", action="store_true", default=False, help="If data contains phylogenetic-like information (what the ancestor of a hyperparameter configuration was, can draw connections. Otherweise, script interpolates connection from timestamp information.")
-    parser.add_argument("--points", choices=["x", "o", "order", None], default="o", help="How to draw the individual data points. Order indicates should provide a number indicating in which order the configuration was run by start time.")
+    parser.add_argument("--points", choices=["o"], default="o", help="How to draw the individual data points.")
+    parser.add_argument("--point_label", choices=["order", "none"], help="If adding text annotation to the points in the scatter plot, what to annotate. Order is the order in which the hyperparameters were tried by start_time.")
     parser.add_argument('--evaluation_metric', help="The evaluation metric to use for showing performance of features.")
     parser.add_argument('--title', default=None, help="How would you like to title your plot?")
     parser.add_argument('--save', action="store_true", default=False, help="Save the plot?")
     parser.add_argument('--use_time', action="store_true", help="Makes time the X axis to see progression across state space.")
     parser.add_argument('--time_axis', default="X", choices=["X", "colour","X+colour"], help="By default if use_time argument is enabled, plots as X axis being time. If -1, sets color scheme to be represented by start_time instead of loss.")
+    parser.add_argument('--fig_size', default=[16,8], nargs="+", help="The size of the figure", type=int)
     args = parser.parse_args(arguments)
     print(args)
 
-    data = pickle.load(args.data)
+    data = pickle.load(args.data, encoding='bytes')
     data2 = sorted(data, key=_null_aware_key_comparator)
     data = data2
 
@@ -114,8 +136,12 @@ def main(arguments):
         if args.time_axis != "colour":
             X = np.concatenate([np.arange(X.shape[0]).reshape(-1,1),X], axis=1)
 
-    fig = plt.figure(figsize=(16, 8))
-    # TODO: colours based on loss or size based on loss
+    fig = plt.figure(figsize=args.fig_size)
+    if args.projection_type == "3d":
+        ax = Axes3D(fig)
+    else:
+        ax = fig.gca()
+
     # TODO: handle non-numeric features
 
     if args.loss_interpolation_type == "colour":
@@ -129,7 +155,6 @@ def main(arguments):
         cmap=cm
         normalize = matplotlib.colors.Normalize(vmin=np.min(Y), vmax=np.max(Y))
         if args.projection_type == "3d":
-            ax = Axes3D(fig)
             sc = ax.scatter(X[:,0], X[:, 1], X[:, 2], s=50, c=Y.reshape(-1), alpha=.5, norm=normalize, lw = 0)
 
         else:
@@ -156,27 +181,38 @@ def main(arguments):
         clbar.set_label(args.evaluation_metric)
         # plt.imshow(heatmap)
     elif args.loss_interpolation_type == "none":
-        sc = plt.scatter(X[:,0], X[:, 1], color="teal", alpha=.5)
+        if args.projection_type == "3d":
+            sc = ax.scatter(X[:,0], X[:, 1], X[:, 2], s=50, color="teal", alpha=.5, lw = 0)
+
+        else:
+            sc = plt.scatter(X[:,0], X[:, 1], color="teal", s=50, alpha=.5, lw = 0)
 
     if args.use_time:
         if len(features) == required_features[args.projection_type]:
             if args.projection_type == "2d":
                 plt.xlabel('Trials')
                 plt.ylabel(features[0])
+            elif args.time_axis == "colour":
+                ax.set_ylabel(features[0])
+                ax.set_zlabel(features[1])
+                ax.set_zlabel(features[2])
             else:
                 ax.set_xlabel('Trials')
                 ax.set_ylabel(features[0])
                 ax.set_zlabel(features[1])
         else:
-            plt.xlabel("Trials")
-            plt.ylabel("PCA Component (Features {})".format(", ".join(features)))
             if args.projection_type == "2d":
                 plt.xlabel("Trials")
                 plt.ylabel("PCA Component (Features {})".format(", ".join(features)))
             else:
-                ax.set_xlabel("Trials")
-                ax.set_ylabel("PCA Component 1 (Features {})".format(", ".join(features)))
-                ax.set_zlabel("PCA Component 2 (Features {})".format(", ".join(features)))
+                if args.time_axis == "colour":
+                    ax.set_xlabel("PCA Component 1 (Features {})".format(", ".join(features)))
+                    ax.set_ylabel("PCA Component 2 (Features {})".format(", ".join(features)))
+                    ax.set_zlabel("PCA Component 3 (Features {})".format(", ".join(features)))
+                else:
+                    ax.set_xlabel("Trials")
+                    ax.set_ylabel("PCA Component 1 (Features {})".format(", ".join(features)))
+                    ax.set_zlabel("PCA Component 2 (Features {})".format(", ".join(features)))
     else:
         if len(features) == required_features[args.projection_type]:
             # TODO: handle 3d projection
@@ -197,6 +233,17 @@ def main(arguments):
                 ax.set_zlabel("PCA Component 3 (Features {})".format(", ".join(features)))
     if args.title:
         plt.title(args.title)
+
+    if args.point_label is not "none":
+
+        if args.point_label == "order":
+            for i, txt in enumerate(X):
+                if args.projection_type == "3d":
+                    raise NotImplementedError("3D projection with point labels is not currently supported")
+                    # TODO: for some reason this doesn't work, need to debug
+                    annotate3D(ax, str(i), (X[i,0],X[i,1], X[i,2]))
+                else:
+                    ax.annotate(str(i), (X[i,0],X[i,1]))
 
     if args.save:
         unique_filename = str(uuid.uuid4())
