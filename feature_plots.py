@@ -12,7 +12,9 @@ import pickle
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import matplotlib
+import datetime
 import uuid
+from mpl_toolkits.mplot3d import Axes3D
 
 # plt.rcParams['text.usetex'] = True
 
@@ -56,6 +58,13 @@ def _get_results_with_name(data, name):
 
     return Y
 
+def _null_aware_key_comparator(x):
+
+    if x["start_time"] is not None:
+        return x["start_time"]
+    else:
+        return 1
+
 def main(arguments):
 
     parser = argparse.ArgumentParser(
@@ -63,17 +72,21 @@ def main(arguments):
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('data', type=argparse.FileType('rb'), help="Input file as a pickle in Orion format.")
     parser.add_argument('--features', nargs="+", type=str, default=None, help="An optional list of features to use rather than the entire list.")
-    parser.add_argument('--projection_type', choices=['2d', '3d', 'heatmap'], default='2d', help="The type of projection, a 2D plane, a 3D plane, or a heatmap.")
+    parser.add_argument('--projection_type', choices=['2d', '3d'], default='2d', help="The type of projection, a 2D plane, a 3D plane, or a heatmap.")
     parser.add_argument('--loss_interpolation_type', choices=["colour", "heatmap", "none"], help="How to show the validation loss value if at all.", default="colour")
     parser.add_argument("--phylo", action="store_true", default=False, help="If data contains phylogenetic-like information (what the ancestor of a hyperparameter configuration was, can draw connections. Otherweise, script interpolates connection from timestamp information.")
     parser.add_argument("--points", choices=["x", "o", "order", None], default="o", help="How to draw the individual data points. Order indicates should provide a number indicating in which order the configuration was run by start time.")
     parser.add_argument('--evaluation_metric', help="The evaluation metric to use for showing performance of features.")
     parser.add_argument('--title', default=None, help="How would you like to title your plot?")
     parser.add_argument('--save', action="store_true", default=False, help="Save the plot?")
+    parser.add_argument('--use_time', action="store_true", help="Makes time the X axis to see progression across state space.")
+    parser.add_argument('--time_axis', default="X", choices=["X", "colour","X+colour"], help="By default if use_time argument is enabled, plots as X axis being time. If -1, sets color scheme to be represented by start_time instead of loss.")
     args = parser.parse_args(arguments)
     print(args)
 
     data = pickle.load(args.data)
+    data2 = sorted(data, key=_null_aware_key_comparator)
+    data = data2
 
     # currently only support real
     supported_feature_types = ['real']
@@ -85,36 +98,54 @@ def main(arguments):
     else:
         features = args.features
 
-    if len(features) < 2:
-        raise ValueError("Requires at least 2 features!")
-    elif len(features) < 3 and args.projection_type == "3d":
-        raise ValueError("To make a 3D graph need at least 2 features.")
 
-    required_features = { "3d" : 3, "2d" : 2, "heatmap": 2}
+    if args.use_time and args.time_axis != "colour":
+        required_features = { "3d" : 2, "2d" : 1}
+    else:
+        required_features = { "3d" : 3, "2d" : 2, "heatmap": 2}
+
+    if len(features) < required_features[args.projection_type]:
+        raise ValueError("To make a graph need at least {} features, have {}.".format(required_features[args.projection_type], len(features)))
+
 
     X, projected = _get_matrix_from_features(data, features, required_features[args.projection_type])
 
-    fig = plt.figure(figsize=(16, 8))
+    if args.use_time:
+        if args.time_axis != "colour":
+            X = np.concatenate([np.arange(X.shape[0]).reshape(-1,1),X], axis=1)
 
+    fig = plt.figure(figsize=(16, 8))
     # TODO: colours based on loss or size based on loss
     # TODO: handle non-numeric features
-    if len(features) == required_features[args.projection_type]:
-        # TODO: handle 3d projection
-        plt.xlabel(features[0])
-        plt.ylabel(features[1])
-    else:
-        plt.ylabel("PCA Component 1 (Features {})".format(", ".join(features)))
-        plt.ylabel("PCA Component 2 (Features {})".format(", ".join(features)))
 
     if args.loss_interpolation_type == "colour":
-        Y = _get_results_with_name(data, args.evaluation_metric)
+        if args.use_time and (args.time_axis == "colour" or args.time_axis == "X+colour"):
+            # Sometimes we want to colour things by when they were created
+            Y = np.array([(x["start_time"]-datetime.datetime(1970,1,1)).total_seconds() for x in data])
+        else:
+            Y = _get_results_with_name(data, args.evaluation_metric)
+
         cm = plt.cm.get_cmap('RdYlBu')
         cmap=cm
         normalize = matplotlib.colors.Normalize(vmin=np.min(Y), vmax=np.max(Y))
-        sc = plt.scatter(X[:,0], X[:, 1], c=Y.reshape(-1), alpha=.8, norm=normalize)
+        if args.projection_type == "3d":
+            ax = Axes3D(fig)
+            sc = ax.scatter(X[:,0], X[:, 1], X[:, 2], s=50, c=Y.reshape(-1), alpha=.5, norm=normalize, lw = 0)
+
+        else:
+            sc = plt.scatter(X[:,0], X[:, 1], c=Y.reshape(-1), s=50, alpha=.5, norm=normalize, lw = 0)
+
         clbar = plt.colorbar(sc)
-        clbar.set_label(args.evaluation_metric)
+
+        if args.use_time and (args.time_axis == "colour" or args.time_axis == "X+colour"):
+            clbar.set_label("Start Time")
+        else:
+            clbar.set_label(args.evaluation_metric)
+
     elif args.loss_interpolation_type == "heatmap":
+        if args.projection_type == "3d":
+            raise NotImplementedError("3d projection not yet supported as Heatmap")
+
         Y = _get_results_with_name(data, args.evaluation_metric)
         # plt.hexbin(x,y)
         heatmap, xedges, yedges = np.histogram2d(X[:,0], X[:,1], weights=Y.reshape(-1))
@@ -127,6 +158,43 @@ def main(arguments):
     elif args.loss_interpolation_type == "none":
         sc = plt.scatter(X[:,0], X[:, 1], color="teal", alpha=.5)
 
+    if args.use_time:
+        if len(features) == required_features[args.projection_type]:
+            if args.projection_type == "2d":
+                plt.xlabel('Trials')
+                plt.ylabel(features[0])
+            else:
+                ax.set_xlabel('Trials')
+                ax.set_ylabel(features[0])
+                ax.set_zlabel(features[1])
+        else:
+            plt.xlabel("Trials")
+            plt.ylabel("PCA Component (Features {})".format(", ".join(features)))
+            if args.projection_type == "2d":
+                plt.xlabel("Trials")
+                plt.ylabel("PCA Component (Features {})".format(", ".join(features)))
+            else:
+                ax.set_xlabel("Trials")
+                ax.set_ylabel("PCA Component 1 (Features {})".format(", ".join(features)))
+                ax.set_zlabel("PCA Component 2 (Features {})".format(", ".join(features)))
+    else:
+        if len(features) == required_features[args.projection_type]:
+            # TODO: handle 3d projection
+            if args.projection_type == "2d":
+                plt.xlabel(features[0])
+                plt.ylabel(features[1])
+            else:
+                ax.set_xlabel(features[0])
+                ax.set_ylabel(features[1])
+                ax.set_zlabel(features[2])
+        else:
+            if args.projection_type == "2d":
+                plt.xlabel("PCA Component 1 (Features {})".format(", ".join(features)))
+                plt.ylabel("PCA Component 2 (Features {})".format(", ".join(features)))
+            else:
+                ax.set_xlabel("PCA Component 1 (Features {})".format(", ".join(features)))
+                ax.set_ylabel("PCA Component 2 (Features {})".format(", ".join(features)))
+                ax.set_zlabel("PCA Component 3 (Features {})".format(", ".join(features)))
     if args.title:
         plt.title(args.title)
 
