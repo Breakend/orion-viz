@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import matplotlib
 import datetime
+from scipy import stats
 import uuid
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -103,6 +104,11 @@ def main(arguments):
     parser.add_argument('--use_time', action="store_true", help="Makes time the X axis to see progression across state space.")
     parser.add_argument('--time_axis', default="X", choices=["X", "colour","X+colour"], help="By default if use_time argument is enabled, plots as X axis being time. If -1, sets color scheme to be represented by start_time instead of loss.")
     parser.add_argument('--fig_size', default=[16,8], nargs="+", help="The size of the figure", type=int)
+    parser.add_argument('--best_percent_filter', type=float, default=100.0, help="Take only the top 25% of samples according to the evaluation_metric. If negative takes the bottom percent.")
+    parser.add_argument('--lower_better', action="store_true", default=False, help="Inverse the colour if lower is better for the evaluation_metric")
+    parser.add_argument('--bins', help="The number of bins for a heatmap projection to use.", default=10, type=int)
+    parser.add_argument('--heatmap_interpolate_missing', action="store_true", default=False, help="If the heatmap doesn't have enough data, colour the missing bins according to the worst value.")
+    parser.add_argument('--time_rank', action="store_true", default=False, help="Uses rank when visualizing or labeling time instead of timestamp.")
     args = parser.parse_args(arguments)
     print(args)
 
@@ -120,6 +126,7 @@ def main(arguments):
     else:
         features = args.features
 
+    print("Using features {}".format(features))
 
     if args.use_time and args.time_axis != "colour":
         required_features = { "3d" : 2, "2d" : 1}
@@ -143,27 +150,61 @@ def main(arguments):
         ax = fig.gca()
 
     # TODO: handle non-numeric features
+    if args.evaluation_metric:
+        Y = _get_results_with_name(data, args.evaluation_metric)
+        if args.best_percent_filter < 100.0:
+            percentile = np.percentile(Y, np.abs(args.best_percent_filter))
+            if args.best_percent_filter < 0:
+                X2 = X[Y[:,0]<=percentile]
+                Y2 = Y[Y[:,0]<=percentile]
+                X = X2
+                Y = Y2
+            else:
+                X2 = X[Y[:,0]>=percentile]
+                Y2 = Y[Y[:,0]>=percentile]
+                X = X2
+                Y = Y2
+
+    if args.use_time and (args.time_axis == "colour" or args.time_axis == "X+colour"):
+        # Sometimes we want to colour things by when they were created
+        Ytime = np.array([(x["start_time"]-datetime.datetime(1970,1,1)).total_seconds() for x in data])
+
+        if args.time_rank:
+            order = Ytime.reshape(-1).argsort()
+            ranks = order.argsort()
+            Ytime = ranks.reshape(-1,1)
+
+        # TODO: make this less repeated code
+        if args.best_percent_filter < 100.0 and args.evaluation_metric:
+            Y = _get_results_with_name(data, args.evaluation_metric)
+            if args.best_percent_filter < 100.0:
+                percentile = np.percentile(Y, np.abs(args.best_percent_filter))
+                if args.best_percent_filter < 0:
+                    Ytime = Ytime[Y[:,0]>=percentile]
+                else:
+                    Ytime = Ytime[Y[:,0]<=percentile]
+        Y = Ytime
 
     if args.loss_interpolation_type == "colour":
-        if args.use_time and (args.time_axis == "colour" or args.time_axis == "X+colour"):
-            # Sometimes we want to colour things by when they were created
-            Y = np.array([(x["start_time"]-datetime.datetime(1970,1,1)).total_seconds() for x in data])
+        if args.lower_better:
+            cm = plt.cm.get_cmap('RdYlBu')
         else:
-            Y = _get_results_with_name(data, args.evaluation_metric)
-
-        cm = plt.cm.get_cmap('RdYlBu')
+            cm = plt.cm.get_cmap('RdYlBu_r')
         cmap=cm
         normalize = matplotlib.colors.Normalize(vmin=np.min(Y), vmax=np.max(Y))
         if args.projection_type == "3d":
-            sc = ax.scatter(X[:,0], X[:, 1], X[:, 2], s=50, c=Y.reshape(-1), alpha=.5, norm=normalize, lw = 0)
+            sc = ax.scatter(X[:,0], X[:, 1], X[:, 2], s=50, c=Y.reshape(-1), alpha=.7, norm=normalize, lw = 0, cmap=cm)
 
         else:
-            sc = plt.scatter(X[:,0], X[:, 1], c=Y.reshape(-1), s=50, alpha=.5, norm=normalize, lw = 0)
+            sc = plt.scatter(X[:,0], X[:, 1], c=Y.reshape(-1), s=50, alpha=.7, norm=normalize, lw = 0, cmap=cm)
 
         clbar = plt.colorbar(sc)
 
         if args.use_time and (args.time_axis == "colour" or args.time_axis == "X+colour"):
-            clbar.set_label("Start Time")
+            if not args.time_rank:
+                clbar.set_label("Start Time")
+            else:
+                clbar.set_label("Trials")
         else:
             clbar.set_label(args.evaluation_metric)
 
@@ -171,13 +212,23 @@ def main(arguments):
         if args.projection_type == "3d":
             raise NotImplementedError("3d projection not yet supported as Heatmap")
 
-        Y = _get_results_with_name(data, args.evaluation_metric)
         # plt.hexbin(x,y)
-        heatmap, xedges, yedges = np.histogram2d(X[:,0], X[:,1], weights=Y.reshape(-1))
+        H, xedges, yedges, binnumber = stats.binned_statistic_2d(X[:,0], X[:,1], Y.reshape(-1), statistic='mean', bins=(args.bins, args.bins))
         # plt.clf()
+        H = np.ma.masked_invalid(H)
+        if args.heatmap_interpolate_missing:
+            if args.lower_better:
+                H[np.isnan(H)] = np.max(Y)
+            else:
+                H[np.isnan(H)] = np.min(Y)
+
+
         xi, yi = np.meshgrid(xedges, yedges)
-        sc = plt.pcolormesh(xi, yi, heatmap)
+        cmap  = 'RdYlBu_r' if not args.lower_better else 'RdYlBu'
+        sc = plt.pcolormesh(xi, yi, H.T, cmap=cmap)
         clbar = plt.colorbar(sc)
+        plt.xlim(xmin=np.min(xi), xmax=np.max(xi))
+        plt.ylim(ymin=np.min(yi), ymax=np.max(yi))
         clbar.set_label(args.evaluation_metric)
         # plt.imshow(heatmap)
     elif args.loss_interpolation_type == "none":
@@ -190,16 +241,21 @@ def main(arguments):
     if args.use_time:
         if len(features) == required_features[args.projection_type]:
             if args.projection_type == "2d":
-                plt.xlabel('Trials')
-                plt.ylabel(features[0])
-            elif args.time_axis == "colour":
-                ax.set_ylabel(features[0])
-                ax.set_zlabel(features[1])
-                ax.set_zlabel(features[2])
+                if args.time_axis == "colour":
+                    plt.xlabel(features[0])
+                    plt.ylabel(features[1])
+                else:
+                    plt.xlabel('Trials')
+                    plt.ylabel(features[0])
             else:
-                ax.set_xlabel('Trials')
-                ax.set_ylabel(features[0])
-                ax.set_zlabel(features[1])
+                if args.time_axis == "colour":
+                    ax.set_ylabel(features[0])
+                    ax.set_zlabel(features[1])
+                    ax.set_zlabel(features[2])
+                else:
+                    ax.set_xlabel('Trials')
+                    ax.set_ylabel(features[0])
+                    ax.set_zlabel(features[1])
         else:
             if args.projection_type == "2d":
                 plt.xlabel("Trials")
