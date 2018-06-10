@@ -26,10 +26,12 @@ rcParams.update({
     'xtick.labelsize': 'x-large',
     'ytick.labelsize': 'x-large',
     'legend.fontsize' : 'small',
-    'font.size': 18,
+    'font.size': 25,
     'font.family': 'Times New Roman',
     'font.serif': 'Times',
-    'axes.labelpad': 20
+    'axes.labelpad': 20,
+    'axes.ymargin' : 0.05,
+    'axes.xmargin' : 0.05
     })
 def _get_feature_from_list(l, feature):
     for x in l:
@@ -124,6 +126,9 @@ def main(arguments):
     args = parser.parse_args(arguments)
     print(args)
 
+    if args.projection_type == "3d":
+        rcParams.update({'axes.labelpad': 30})
+
     data = pickle.load(args.data, encoding='bytes')
     data2 = sorted(data, key=_null_aware_key_comparator)
     data = data2
@@ -138,6 +143,7 @@ def main(arguments):
     else:
         features = args.features
 
+
     print("Using features {}".format(features))
 
     if args.use_time and args.time_axis != "colour":
@@ -148,6 +154,7 @@ def main(arguments):
     if len(features) < required_features[args.projection_type]:
         raise ValueError("To make a graph need at least {} features, have {}.".format(required_features[args.projection_type], len(features)))
 
+    label_features = [x.replace("_", " ") for x in features]
 
     X, projected = _get_matrix_from_features(data, features, required_features[args.projection_type])
 
@@ -218,7 +225,7 @@ def main(arguments):
             else:
                 clbar.set_label("Trials")
         else:
-            clbar.set_label(args.evaluation_metric)
+            clbar.set_label(args.evaluation_metric.replace("_", " "))
 
     elif args.loss_interpolation_type == "heatmap":
         if args.projection_type == "3d":
@@ -241,66 +248,83 @@ def main(arguments):
         clbar = plt.colorbar(sc)
         plt.xlim(xmin=np.min(xi), xmax=np.max(xi))
         plt.ylim(ymin=np.min(yi), ymax=np.max(yi))
-        clbar.set_label(args.evaluation_metric)
+        clbar.set_label(args.evaluation_metric.replace("_", " "))
         # plt.imshow(heatmap)
     elif args.loss_interpolation_type == "none":
         if args.projection_type == "3d":
-            sc = ax.scatter(X[:,0], X[:, 1], X[:, 2], s=50, color="teal", alpha=.5, lw = 0)
+            sc = ax.scatter(X[:,0], X[:, 1], X[:, 2], s=60, color="teal", alpha=.5, lw = 0)
 
         else:
-            sc = plt.scatter(X[:,0], X[:, 1], color="teal", s=50, alpha=.5, lw = 0)
+            sc = plt.scatter(X[:,0], X[:, 1], color="teal", s=60, alpha=.5, lw = 0)
 
     if args.use_time:
         if len(features) == required_features[args.projection_type]:
             if args.projection_type == "2d":
                 if args.time_axis == "colour":
-                    plt.xlabel(features[0])
-                    plt.ylabel(features[1])
+                    plt.xlabel(label_features[0])
+                    plt.ylabel(label_features[1])
                 else:
                     plt.xlabel('Trials')
-                    plt.ylabel(features[0])
+                    plt.ylabel(label_features[0])
             else:
                 if args.time_axis == "colour":
-                    ax.set_ylabel(features[0])
-                    ax.set_zlabel(features[1])
-                    ax.set_zlabel(features[2])
+                    ax.set_ylabel(label_features[0])
+                    ax.set_zlabel(label_features[1])
+                    ax.set_zlabel(label_features[2])
                 else:
                     ax.set_xlabel('Trials')
-                    ax.set_ylabel(features[0])
-                    ax.set_zlabel(features[1])
+                    ax.set_ylabel(label_features[0])
+                    ax.set_zlabel(label_features[1])
         else:
             if args.projection_type == "2d":
                 plt.xlabel("Trials")
-                plt.ylabel("PCA Component (Features {})".format(", ".join(features)))
+                plt.ylabel("PCA ({})".format(", ".join(label_features)))
             else:
                 if args.time_axis == "colour":
-                    ax.set_xlabel("PCA Component 1 (Features {})".format(", ".join(features)))
-                    ax.set_ylabel("PCA Component 2 (Features {})".format(", ".join(features)))
-                    ax.set_zlabel("PCA Component 3 (Features {})".format(", ".join(features)))
+                    ax.set_xlabel("PCA 1 ({})".format(", ".join(label_features)))
+                    ax.set_ylabel("PCA 2 ({})".format(", ".join(label_features)))
+                    ax.set_zlabel("PCA 3 ({})".format(", ".join(label_features)))
                 else:
                     ax.set_xlabel("Trials")
-                    ax.set_ylabel("PCA Component 1 (Features {})".format(", ".join(features)))
-                    ax.set_zlabel("PCA Component 2 (Features {})".format(", ".join(features)))
+                    ax.set_ylabel("PCA 1 ({})".format(", ".join(label_features)))
+                    ax.set_zlabel("PCA 2 ({})".format(", ".join(label_features)))
     else:
         if len(features) == required_features[args.projection_type]:
             # TODO: handle 3d projection
             if args.projection_type == "2d":
-                plt.xlabel(features[0])
-                plt.ylabel(features[1])
+                plt.xlabel(label_features[0])
+                plt.ylabel(label_features[1])
             else:
-                ax.set_xlabel(features[0])
-                ax.set_ylabel(features[1])
-                ax.set_zlabel(features[2])
+                ax.set_xlabel(label_features[0])
+                ax.set_ylabel(label_features[1])
+                ax.set_zlabel(label_features[2])
         else:
             if args.projection_type == "2d":
-                plt.xlabel("PCA Component 1 (Features {})".format(", ".join(features)))
-                plt.ylabel("PCA Component 2 (Features {})".format(", ".join(features)))
+                plt.xlabel("PCA 1 ({})".format(", ".join(label_features)))
+                plt.ylabel("PCA 2 ({})".format(", ".join(label_features)))
             else:
-                ax.set_xlabel("PCA Component 1 (Features {})".format(", ".join(features)))
-                ax.set_ylabel("PCA Component 2 (Features {})".format(", ".join(features)))
-                ax.set_zlabel("PCA Component 3 (Features {})".format(", ".join(features)))
+                ax.set_xlabel("PCA 1 ({})".format(", ".join(label_features)))
+                ax.set_ylabel("PCA 2 ({})".format(", ".join(label_features)))
+                ax.set_zlabel("PCA 3 ({})".format(", ".join(label_features)))
     if args.title:
         plt.title(args.title)
+
+    if args.loss_interpolation_type != "heatmap":
+        ax.autoscale(enable=True, tight=True)
+
+    # Limit number of ticks to 5
+    # nb_ticks = 4
+    # start, end = ax.get_xlim()
+    # start = np.around(start, decimals=1)
+    # end = np.around(end, decimals=1)
+    # ranged = np.linspace(start, end, nb_ticks)
+    # ax.xaxis.set_ticks(ranged)
+    #
+    # start, end = ax.get_ylim()
+    # start = np.around(start, decimals=1)
+    # end = np.around(end, decimals=1)
+    # ranged = np.linspace(start, end, nb_ticks)
+    # ax.yaxis.set_ticks(ranged)
 
     if args.point_label is not "none":
 

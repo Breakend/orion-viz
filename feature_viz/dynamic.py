@@ -26,9 +26,10 @@ rcParams.update({
     'xtick.labelsize': 'x-large',
     'ytick.labelsize': 'x-large',
     'legend.fontsize' : 'small',
-    'font.size': 18,
+    'font.size': 25,
     'font.family': 'Times New Roman',
-    'font.serif': 'Times'
+    'font.serif': 'Times',
+    'axes.labelpad': 20
     })
 def _get_feature_from_list(l, feature):
     for x in l:
@@ -165,7 +166,8 @@ def main(arguments):
     axis_font = {'fontname':'Arial', 'size':'32'}
 
     plt.xlabel("Steps")
-    plt.ylabel(args.evaluation_metric)
+    plt.ylabel(args.evaluation_metric.replace("_", " "))
+    ax.autoscale(enable=True, tight=True)
     if args.ymax:
         plt.ylim(ymax=args.ymax)
 

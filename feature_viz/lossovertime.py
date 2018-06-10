@@ -26,10 +26,14 @@ rcParams.update({
     'xtick.labelsize': 'x-large',
     'ytick.labelsize': 'x-large',
     'legend.fontsize' : 'small',
-    'font.size': 18,
+    'font.size': 25,
     'font.family': 'Times New Roman',
-    'font.serif': 'Times'
+    'font.serif': 'Times',
+    'axes.labelpad': 20,
+    'axes.ymargin' : 0.05,
+    'axes.xmargin' : 0.05
     })
+
 def _get_feature_from_list(l, feature):
     for x in l:
         if x['name'] == feature:
@@ -145,13 +149,13 @@ def main(arguments):
 
         clbar = plt.colorbar(sc)
 
-        clbar.set_label(args.evaluation_metric)
+        clbar.set_label(args.evaluation_metric.replace("_", " "))
     else:
         sc = plt.scatter(X[:,0], X[:, 1], color="teal", s=50, alpha=.5, lw = 0)
 
     plt.xlabel("Trials")
-    plt.ylabel(args.evaluation_metric)
-
+    plt.ylabel(args.evaluation_metric.replace("_", " "))
+    ax.autoscale(enable=True, tight=True)
     if args.title:
         plt.title(args.title)
 
