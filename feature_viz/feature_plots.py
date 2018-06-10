@@ -18,7 +18,19 @@ import uuid
 from mpl_toolkits.mplot3d import Axes3D
 
 # plt.rcParams['text.usetex'] = True
-
+from matplotlib import rcParams
+rcParams.update({
+    'figure.autolayout': True,
+    'axes.labelsize': 'xx-large',
+    'axes.titlesize' : 'xx-large',
+    'xtick.labelsize': 'x-large',
+    'ytick.labelsize': 'x-large',
+    'legend.fontsize' : 'small',
+    'font.size': 18,
+    'font.family': 'Times New Roman',
+    'font.serif': 'Times',
+    'axes.labelpad': 20
+    })
 def _get_feature_from_list(l, feature):
     for x in l:
         if x['name'] == feature:
